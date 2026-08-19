@@ -4,29 +4,34 @@ on:
   pull_request:
     branches: [ main ]
   push:
-    branches: [ ci/cross-platform-validation ]
+    branches: [ integration/picocompress-codecs ]
 
 permissions:
   contents: read
 
 jobs:
-  linux:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout PicoParquet
+        uses: actions/checkout@v4
+        with:
+          path: picoparquet
+      - name: Checkout PicoCompress
+        uses: actions/checkout@v4
+        with:
+          repository: WillEastbury/picocompress
+          path: picocompress
       - name: Configure
-        run: cmake -S . -B build -DPICOPARQUET_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
-      - name: Build
-        run: cmake --build build --config Release --parallel
-      - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
-
-  windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure
-        run: cmake -S . -B build -DPICOPARQUET_BUILD_TESTS=ON
+        shell: bash
+        run: >-
+          cmake -S picoparquet -B build
+          -DPICOPARQUET_BUILD_TESTS=ON
+          -DPICOPARQUET_WITH_PICOCOMPRESS=ON
+          -DPICOCOMPRESS_ROOT="$GITHUB_WORKSPACE/picocompress"
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Test
