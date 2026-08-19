@@ -5,6 +5,30 @@
 
 static const uint8_t expected[] = "decoded through registry";
 
+static pcx_result fake_decoder_init(void *state, const pcx_options *options)
+{
+    (void)state;
+    if (options && options->count) return PCX_ERR_UNSUPPORTED;
+    return PCX_OK;
+}
+
+static pcx_result fake_decoder_sink(void *state, const uint8_t *data, size_t len,
+                                    pcx_write_fn write_fn, void *write_user)
+{
+    (void)state;
+    (void)data;
+    (void)len;
+    if (!write_fn) return PCX_ERR_INPUT;
+    return write_fn(write_user, expected, sizeof(expected) - 1u) == 0
+        ? PCX_OK : PCX_ERR_WRITE;
+}
+
+static pcx_result fake_decoder_finish(void *state)
+{
+    (void)state;
+    return PCX_OK;
+}
+
 static pcx_result fake_decompress(const uint8_t *input, size_t input_len,
                                   uint8_t *output, size_t output_cap,
                                   size_t *output_len)
@@ -28,13 +52,16 @@ static const pcx_codec_v1 fake_zstd = {
     0, 0,
     1, 1,
     NULL, NULL, NULL,
-    NULL, NULL, NULL,
+    fake_decoder_init,
+    fake_decoder_sink,
+    fake_decoder_finish,
     NULL, NULL,
     fake_decompress
 };
 
 int main(void)
 {
+    static const uint8_t compressed[] = { 1, 2, 3 };
     pcx_registry registry;
     pp_picocompress_codec context;
     pp_codec codec;
@@ -43,17 +70,37 @@ int main(void)
     pp_status status;
 
     pcx_registry_init(&registry);
-    if (pcx_registry_register_static(&registry, &fake_zstd) != PCX_ERR_ABI) {
-        /* The host correctly rejects descriptors claiming streaming without
-         * streaming entrypoints. Prove the adapter with a valid descriptor
-         * below instead of weakening the host contract. */
-        pcx_registry_close(&registry);
+    if (pcx_registry_register_static(&registry, &fake_zstd) != PCX_OK) {
+        fprintf(stderr, "failed to register test zstd codec\n");
         return 1;
     }
-    pcx_registry_close(&registry);
+    if (pp_picocompress_codec_init(&context, &registry, &codec) != PP_OK) {
+        pcx_registry_close(&registry);
+        return 2;
+    }
 
-    /* A buffer-capable decoder still needs valid streaming entrypoints under
-     * PicoCompress ABI v1, so use a tiny no-op stream contract. */
-    puts("adapter test requires real PicoCompress codec descriptor");
+    status = codec.decode(codec.context, PP_COMPRESSION_ZSTD,
+                          compressed, sizeof(compressed),
+                          output, sizeof(output), &output_size);
+    if (status != PP_OK || output_size != sizeof(expected) - 1u ||
+        memcmp(output, expected, output_size) != 0) {
+        fprintf(stderr, "registry decode failed status=%d size=%zu\n",
+                (int)status, output_size);
+        pcx_registry_close(&registry);
+        return 3;
+    }
+
+    output_size = 0;
+    status = codec.decode(codec.context, PP_COMPRESSION_BROTLI,
+                          compressed, sizeof(compressed),
+                          output, sizeof(output), &output_size);
+    if (status != PP_ERR_UNSUPPORTED_CODEC) {
+        fprintf(stderr, "missing codec did not fail explicitly: %d\n", (int)status);
+        pcx_registry_close(&registry);
+        return 4;
+    }
+
+    pcx_registry_close(&registry);
+    puts("PicoParquet PicoCompress adapter tests passed");
     return 0;
 }
